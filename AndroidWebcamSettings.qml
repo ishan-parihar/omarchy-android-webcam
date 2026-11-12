@@ -196,8 +196,14 @@ Item {
     path: root.settingsPath
     watchChanges: true
     atomicWrites: true
+    // onFileChanged says the file changed, not that `text()` has the new
+    // contents: it still holds the old read until reload() runs.  Reading
+    // it there kept the panel on a stale snapshot, so a second click
+    // rebuilt the whole settings object from the old values and silently
+    // reverted the first one.
     onLoaded: root.savedSettings = Model.parseJsonObject(text())
-    onFileChanged: root.savedSettings = Model.parseJsonObject(text())
+    onLoadFailed: root.savedSettings = ({})
+    onFileChanged: reload()
   }
 
   readonly property string settingsPath:
