@@ -510,10 +510,7 @@ Item {
       // doing, and writing a different choice under it would change
       // nothing until the next start.  Disabled is the honest state.
       enabled: !root.state.streaming
-      options: root.cameras.length
-        ? root.cameras.filter(function(c) { return c.facing === "front" || c.facing === "back"; })
-            .map(function(c) { return { value: c.facing, label: c.facing === "front" ? "Front" : "Back" }; })
-        : [{ value: "front", label: "Front" }, { value: "back", label: "Back" }]
+      options: Model.facingChoices(root.cameras)
       value: root.facing
       foreground: root.foreground
       accent: Commons.Color.accent

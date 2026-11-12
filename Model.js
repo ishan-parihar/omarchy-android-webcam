@@ -108,6 +108,38 @@ function phoneCameras(cameras) {
   return rows;
 }
 
+// The front/back choices, one per facing.
+//
+// The phone reports several physical cameras with the same facing -- wide,
+// ultrawide and macro all report "back" -- so mapping every camera row
+// produced duplicate pills.  A facing is the choice; which physical camera
+// serves it is the CLI's job to pick.
+function facingChoices(cameras) {
+  var list = isPlainArray(cameras) ? cameras : [];
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var facing = isPlainObject(list[i]) ? list[i].facing : "";
+    if (facing !== "front" && facing !== "back") continue;
+    var seen = false;
+    for (var j = 0; j < out.length; j++) {
+      if (out[j].value === facing) seen = true;
+    }
+    if (!seen) {
+      out.push({ value: facing, label: facing === "front" ? "Front" : "Back" });
+    }
+  }
+  if (out.length === 0) {
+    out.push({ value: "front", label: "Front" });
+    out.push({ value: "back", label: "Back" });
+  }
+  // Front first, so the order does not depend on the phone's enumeration.
+  out.sort(function(a, b) {
+    var order = { front: 0, back: 1 };
+    return order[a.value] - order[b.value];
+  });
+  return out;
+}
+
 // The sizes worth offering for a camera.
 //
 // The phone reports dozens of raw sizes. A webcam is used in calls, so the
