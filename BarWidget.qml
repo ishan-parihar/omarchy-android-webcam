@@ -41,6 +41,40 @@ Panel {
     ? Commons.Color.urgent
     : (live ? Commons.Color.accent : foreground)
 
+  // Who owns the camera.
+  //
+  // The durable service is the right owner when it is installed: it
+  // restarts the stream when the phone sleeps, and it reads the same
+  // settings file the panel writes.  When it is not installed, the bar
+  // drives the CLI directly.  One decision, made once, so the icon and
+  // the panel cannot disagree about who is in charge.
+  property bool serviceInstalled: false
+
+  Process {
+    id: serviceQuery
+    command: ["systemctl", "--user", "is-enabled", "android-webcam.service"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var answer = text.trim();
+        root.serviceInstalled = (answer === "enabled" || answer === "static"
+                                 || answer === "enabled-runtime");
+      }
+    }
+    onExited: function(exitCode) {
+      // A missing or disabled unit exits nonzero.  That is an answer:
+      // there is no service to own the camera, so the CLI is the owner.
+      if (exitCode !== 0) root.serviceInstalled = false;
+    }
+  }
+
+  Timer {
+    interval: 15000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!serviceQuery.running) serviceQuery.running = true
+  }
+
   // --- the CLI ---------------------------------------------------------------
   //
   // `android` is the skill's CLI. Every call is an argv array, never a shell
@@ -66,15 +100,35 @@ Panel {
     onTriggered: if (!statusProc.running) statusProc.running = true
   }
 
-  // The bar widget owns the single IPC target, so nothing else may register
-  // a handler for it.
-  manageIpc: false
+  // The base Panel registers the target's IpcHandler itself, so
+  // manageIpc stays true and its open/close/show/hide/toggle reach the
+  // KeyboardPanel through the base's own panelController.
+  //
+  // This was `manageIpc: false` with no replacement, which meant nothing
+  // registered the target at all: omarchy-shell reported "Target not
+  // found" and the panel could only be opened by clicking the icon.
+  manageIpc: true
+
+  // The bar host sizes each widget from its implicit size. A Panel is an
+  // empty Item with neither, and pill-bar mounts widgets in its centered
+  // cluster by that size, so without these the widget is instantiated and
+  // registered for IPC but measures 0x0 and paints nothing.
+  //
+  // It is laid out from the button, the way the first-party bar widgets do
+  // it, so the slot is exactly as wide and as tall as the icon needs and no
+  // wider.
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
 
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰇮"
+    // U+F0102 (md-camera_front) is the camera.  The glyph that was here
+    // before, U+F010A, is md-candycane: a candy cane, not a camera, which
+    // is what made the icon look wrong to anyone who knew what they were
+    // looking at.
+    text: "󰄂"
     // The glyph alone cannot carry the state, so the colour does. A glyph
     // change would mean the user had to learn which shape meant what.
     active: root.live
@@ -92,23 +146,55 @@ Panel {
         root.open();
         return;
       }
-      // Left toggles. The read and the write go through the same CLI, so the
-      // icon and the action can never disagree about what "streaming" means.
-      if (root.state.streaming) {
-        stopProc.running = true;
-      } else {
-        startProc.args = [];
-        startProc.running = true;
-      }
+      // Left toggles.  Both paths go through the same functions the
+      // panel uses, so the icon and the panel cannot disagree about who
+      // owns the camera.
+      if (root.state.streaming) root.stopStream();
+      else root.startStream([]);
     }
   }
 
-  // Start and stop live here rather than in the panel, so the bar icon and
-  // the panel's button run exactly the same code.
+  // --- start and stop --------------------------------------------------------
+  //
+  // The service is the owner when it is installed: it restarts the stream
+  // when the phone sleeps, and it reads the same settings file the panel
+  // writes.  Starting a second stream beside it is the failure this
+  // avoids -- two camera clients, and the phone refuses the second one.
+  //
+  // When there is no service, the CLI is the owner.  The settings file is
+  // passed explicitly because the CLI does not read it unless asked, and
+  // an icon that started with defaults while the panel showed something
+  // else would be a lie the user only notices in a call.
+  function startStream(args) {
+    if (root.serviceInstalled) {
+      serviceAction.verb = "start";
+      serviceAction.running = true;
+      return;
+    }
+    startProc.args = args || [];
+    startProc.running = true;
+  }
+
+  function stopStream() {
+    if (root.serviceInstalled) {
+      serviceAction.verb = "stop";
+      serviceAction.running = true;
+      return;
+    }
+    stopProc.running = true;
+  }
+
+  readonly property string settingsPath:
+      Quickshell.env("XDG_STATE_HOME") + "/android-scrcpy-control/webcam-settings.json"
+
   Process {
     id: startProc
     property var args: []
-    command: [root.cli, "webcam", "start", "--background"].concat(root.args)
+    command: [root.cli, "webcam", "start", "--background",
+              "--settings", root.settingsPath].concat(startProc.args)
+    onExited: function(exitCode) {
+      if (!statusProc.running) statusProc.running = true;
+    }
   }
 
   Process {
@@ -119,12 +205,26 @@ Panel {
     }
   }
 
+  Process {
+    id: serviceAction
+    property string verb: "start"
+    command: ["systemctl", "--user", verb, "android-webcam.service"]
+    onExited: function(exitCode) {
+      if (!statusProc.running) statusProc.running = true;
+      if (!serviceQuery.running) serviceQuery.running = true;
+    }
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: button
     owner: root
     bar: root.bar
     open: root.opened
+    // The panel's content takes keyboard focus when the panel opens, the way
+    // the first-party panels do. Without this the surface maps but no
+    // descendant has active focus, so Qt never delivers a key to it.
+    focusTarget: panel.loadedContent
     contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(panel.loadedContentHeight)
 
@@ -133,8 +233,22 @@ Panel {
     // surface is the largest thing in this plugin.
     content: PanelKeyCatcher {
       id: keyCatcher
+      // The height comes from the content below, not from the panel: the
+      // panel measures the content to decide how tall the card is, so
+      // anchoring the height here would close the loop on itself and the
+      // card would never grow.
       implicitHeight: column.implicitHeight
-      anchors.fill: parent
+      width: parent.width
+
+      // The panel's own keys. Without a handler for close the surface eats
+      // Escape, because PanelKeyCatcher claims every key it is given.
+      onCloseRequested: root.close()
+      // Tab moves between the bar's panels, the way the first-party panels
+      // do it.
+      onTabRequested: function(direction) { root.switchPanel(direction) }
+      // The settings surface has no cursor of its own, so the arrow keys
+      // are left alone rather than pretending to move something.
+      onMoveRequested: function(dx, dy) {}
 
       Column {
         id: column
@@ -151,13 +265,14 @@ Panel {
           fontFamily: root.fontFamily
           cli: root.cli
           status: root.status
-          // The panel's primary action routes through the bar widget's
-          // processes, so there is one start path and one stop path.
-          onRequestStart: function(args) {
-            startProc.args = args;
-            startProc.running = true;
-          }
-          onRequestStop: stopProc.running = true
+          // One owner decision, made by the bar widget, so the panel's
+          // button and the icon cannot fight over the camera.
+          serviceOwns: root.serviceInstalled
+          // The panel's primary action routes through the same two
+          // functions the icon uses, so the service-vs-CLI decision is
+          // made once and the two surfaces cannot fight over the camera.
+          onRequestStart: function(args) { root.startStream(args) }
+          onRequestStop: root.stopStream()
           // Re-checked on every open: the CLI can be installed or removed
           // while the shell keeps running.
           onVisibleChanged: if (visible) settings.recheckCli()

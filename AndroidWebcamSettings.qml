@@ -21,6 +21,11 @@ import "Model.js" as Model
 Item {
   id: root
 
+  // The panel sizes its card from the content's implicit height. An Item has
+  // none, so without this the surface collapses to nothing and the panel
+  // opens as an empty card the width of the screen.
+  implicitHeight: column.implicitHeight
+
   property var bar: null
   property color foreground: Commons.Color.foreground
   property string fontFamily: Style.font.family
@@ -37,6 +42,13 @@ Item {
 
   // The settings a start would use: a running stream's argv when one is
   // running, the saved choices otherwise.
+  //
+  // These are read-only on purpose.  They are a view of two sources --
+  // the running stream and the settings file -- and a control that
+  // assigned to them would break the binding to that source, so the
+  // panel would stop reflecting the truth after the first click.  The
+  // controls call choose() instead, which writes the file and lets the
+  // FileView feed the change back.
   readonly property string facing: running && running.facing ? running.facing : saved("facing", "front")
   readonly property string size: running && running.size ? running.size : saved("size", "1280x720")
   readonly property string fps: running && running.fps ? running.fps : saved("fps", "30")
@@ -211,64 +223,48 @@ Item {
     settingsFile.setText(JSON.stringify(out, null, 2) + "\n");
   }
 
-  // Is the durable service the thing that owns the camera right now?
+  // Record one choice.
   //
-  // Two owners of one camera is the failure this plugin has to avoid.  The
-  // service restarts the stream when the phone sleeps, and a panel that
-  // starts its own stream at the same time produces exactly the error
-  // measured on this host: "the system-wide limit for number of open
-  // cameras has been reached".
+  // The effective values above are read-only views, so a control cannot
+  // assign to them without destroying the binding that keeps the panel
+  // honest.  This builds the whole settings object from the current
+  // effective values, replaces the one key, and writes it: the FileView
+  // reloads it and every binding updates from the file, which is also
+  // what the service reads.
   //
-  // The service is asked, not guessed.  A panel that cannot tell whether
-  // the service owns the camera would either fight it or silently do
-  // nothing, and both are wrong.
+  // A running stream's settings are the running stream's: changing them
+  // under it would do nothing, so the controls are disabled while it
+  // runs and this refuses the write rather than pretending.
+  function choose(key, value) {
+    if (root.state.streaming) return;
+    var out = {
+      facing: root.facing,
+      size: root.size,
+      fps: root.fps,
+      bitRate: root.bitRate,
+      torch: root.torch,
+      audio: root.audio
+    };
+    out[key] = value;
+    root.savedSettings = out;
+    settingsFile.setText(JSON.stringify(out, null, 2) + "\n");
+  }
+
+  // Whether the durable service is the camera's owner.
+  //
+  // The bar widget answers this, because it is the thing that routes a
+  // click to the service or to the CLI.  The panel does not ask systemd
+  // itself: two surfaces asking the same question can get two answers,
+  // and then the button and the message disagree.
   property bool serviceOwns: false
-  property bool serviceChecked: false
-
-  Process {
-    id: serviceProc
-    command: ["systemctl", "--user", "is-active", "android-webcam.service"]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        root.serviceOwns = text.trim() === "active";
-        root.serviceChecked = true;
-      }
-    }
-    onExited: function(exitCode, exitStatus) {
-      // is-active exits nonzero when the unit is not running.  That is
-      // an answer, not a failure, so the state is recorded either way.
-      if (exitCode !== 0 && !root.serviceChecked) {
-        root.serviceOwns = false;
-        root.serviceChecked = true;
-      }
-    }
-  }
-
-  Timer {
-    interval: 10000
-    running: true
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: if (!serviceProc.running) serviceProc.running = true
-  }
 
   // Start and stop.
   //
-  // When the service owns the camera, the panel drives the service rather
-  // than starting a second stream.  The service reads the same settings
-  // file the panel writes, so a restart applies the choice the user just
-  // made.
-  //
-  // When nothing owns it, the panel starts the stream itself and passes
-  // the settings on the command line, so the CLI validates them.
+  // The panel records the choice, then asks the bar widget to act.  The
+  // widget drives the service when there is one and the CLI otherwise.
   function start() {
     if (root.cliMissing) return;
     persist();
-    if (root.serviceOwns) {
-      serviceAction.action = "restart";
-      serviceAction.running = true;
-      return;
-    }
     if (root.onRequestStart) {
       root.onRequestStart(["--facing", root.facing, "--size", root.size,
                           "--fps", root.fps, "--bit-rate", root.bitRate]
@@ -279,22 +275,7 @@ Item {
 
   function stop() {
     if (root.cliMissing) return;
-    if (root.serviceOwns) {
-      serviceAction.action = "stop";
-      serviceAction.running = true;
-      return;
-    }
     if (root.onRequestStop) root.onRequestStop();
-  }
-
-  Process {
-    id: serviceAction
-    property string action: "restart"
-    command: ["systemctl", "--user", action, "android-webcam.service"]
-    onExited: function(exitCode, exitStatus) {
-      if (!statusProc.running) statusProc.running = true;
-      if (!serviceProc.running) serviceProc.running = true;
-    }
   }
 
   // Make the phone the camera the host's apps use.
@@ -346,7 +327,11 @@ Item {
 
   Column {
     id: column
-    anchors.fill: parent
+    // The width follows the parent, but the height is this column's own:
+    // it is what the panel measures to size the card. Anchoring the height
+    // would make the column as tall as the panel, which is the thing being
+    // measured, and the card would never grow past the inset.
+    width: parent.width
     spacing: Style.spacing.xl
 
     // --- header -----------------------------------------------------------
@@ -424,9 +409,9 @@ Item {
     // clicks Stop, the button appears to do nothing for a moment, and the
     // stream comes back a second later because the service restarted it.
     Text {
-      visible: root.serviceOwns
+      visible: root.serviceOwns && root.state.streaming
       textFormat: Text.PlainText
-      text: "The webcam service keeps this running, so it restarts the stream if the phone's camera goes away. Stopping it here stops the service too."
+      text: "The webcam service owns this stream, so it restarts it if the phone's camera goes away. Stopping it here stops the service too."
       color: Qt.darker(root.foreground, 1.5)
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
@@ -515,6 +500,10 @@ Item {
 
     ButtonGroup {
       width: parent.width
+      // A running stream owns these values: its argv is what it is
+      // doing, and writing a different choice under it would change
+      // nothing until the next start.  Disabled is the honest state.
+      enabled: !root.state.streaming
       options: root.cameras.length
         ? root.cameras.filter(function(c) { return c.facing === "front" || c.facing === "back"; })
             .map(function(c) { return { value: c.facing, label: c.facing === "front" ? "Front" : "Back" }; })
@@ -523,21 +512,23 @@ Item {
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
-      onChanged: function(v) { root.facing = v; root.persist(); }
+      onChanged: function(v) { root.choose("facing", v); }
     }
 
     ButtonGroup {
       width: parent.width
+      enabled: !root.state.streaming
       options: root.sizeChoices.map(function(s) { return { value: s, label: s }; })
       value: root.size
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
-      onChanged: function(v) { root.size = v; root.persist(); }
+      onChanged: function(v) { root.choose("size", v); }
     }
 
     ButtonGroup {
       width: parent.width
+      enabled: !root.state.streaming
       options: root.fpsNumbers.length
         ? root.fpsNumbers.map(function(n) { return { value: String(n), label: n + " fps" }; })
         : [{ value: "30", label: "30 fps" }]
@@ -545,17 +536,18 @@ Item {
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
-      onChanged: function(v) { root.fps = v; root.persist(); }
+      onChanged: function(v) { root.choose("fps", v); }
     }
 
     ButtonGroup {
       width: parent.width
+      enabled: !root.state.streaming
       options: Model.bitRateChoices()
       value: root.bitRate
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
-      onChanged: function(v) { root.bitRate = v; root.persist(); }
+      onChanged: function(v) { root.choose("bitRate", v); }
     }
 
     Text {
@@ -574,22 +566,24 @@ Item {
       label: "Torch"
       description: "The camera light. Back camera only. Applies on the next start."
       checked: root.torch
+      enabled: !root.state.streaming
       hasCursor: true
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
-      onClicked: { root.torch = !root.torch; root.persist(); }
+      onClicked: root.choose("torch", !root.torch)
     }
 
     Toggle {
       label: "Phone microphone"
       description: "Forward the phone's microphone too. It is routed through a null sink, so it does not play out your speakers."
       checked: root.audio
+      enabled: !root.state.streaming
       hasCursor: true
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
-      onClicked: { root.audio = !root.audio; root.persist(); }
+      onClicked: root.choose("audio", !root.audio)
     }
 
     PanelSeparator { foreground: root.foreground }

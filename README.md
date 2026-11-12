@@ -40,6 +40,11 @@ omarchy plugin add https://github.com/ishan-parihar/omarchy-android-webcam.git
 omarchy plugin enable ishanp.android-webcam-pro
 ```
 
+From a checkout of this repository, `scripts/deploy` copies the working tree
+into `~/.config/omarchy/plugins/ishanp.android-webcam-pro`, validates it and
+restarts the shell. That is the path used while developing, because the
+installed copy has no `.git` for `omarchy plugin update` to pull into.
+
 Then place it in the bar, on the right by default:
 
 ```bash
@@ -50,16 +55,20 @@ omarchy bar move ishanp.android-webcam-pro --section right
 
 ### The stream
 
-A running process is not proof, so the panel reports three things
+A running process is not proof, so the panel reports four things
 separately, and they are read from the CLI rather than remembered from what
 was last clicked:
 
 - a stream running, which is the process
-- a signal arriving, which is the loopback device carrying frames
+- a writer attached, which is the loopback's sysfs `buffers` count
 - a frame that can be read back out of the device
+- a picture in that frame, measured as the spread of its luma plane
 
-A process with no signal is shown as a failure with the reason, because that
-is exactly the state where a user believes they have a webcam and do not.
+The last two are different facts. A phone whose camera HAL released the
+camera keeps its writer and produces a valid, completely flat frame. That is
+`signal: true, frame: false`, and it is shown as a failure with the reason,
+because it is exactly the state where a user believes they have a webcam and
+do not. `live` requires a real picture, not just a writer.
 
 ### The camera on this PC
 
@@ -89,8 +98,10 @@ encoder works hard for detail no conferencing app shows.
 "Save a frame" reads a frame back out of the device and measures it. A black
 frame is reported as a failure, not a success, because a valid 1280x720 frame
 with nothing in it is exactly what this device's back camera produces, and
-every check that counts bytes says the camera works. The measurement is
-mean brightness out of 255, and the range across the frame.
+every check that counts bytes says the camera works. The saved-frame check
+reports mean brightness out of 255 and the range across the frame; the live
+status check reports the luma spread, where a flat fill is below 2.0 and a
+real picture, even a dark one, is well above it.
 
 ## One owner of the camera
 

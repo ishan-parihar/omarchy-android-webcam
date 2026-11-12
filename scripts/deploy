@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Deploy this working tree into the running Omarchy plugin directory.
+#
+# The installed plugin is a plain copy: it has no .git, so
+# `omarchy plugin update` cannot pull into it.  This is the path from the
+# checkout to the copy the shell loads.
+#
+#   scripts/deploy              copy, validate, restart the shell
+#   scripts/deploy --no-restart copy and validate only
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
+    "$HERE/manifest.json")
+DEST="${OMARCHY_PLUGIN_DIR:-$HOME/.config/omarchy/plugins}/$ID"
+
+if [[ ! -f "$HERE/BarWidget.qml" ]]; then
+    echo "deploy: $HERE does not look like the plugin checkout" >&2
+    exit 1
+fi
+
+mkdir -p "$DEST"
+# The working tree is the source of truth.  --delete removes a file the
+# checkout no longer has, so the installed copy cannot keep a stale QML
+# file that the shell would still load.
+rsync -a --delete \
+    --exclude '.git' \
+    --exclude 'scripts' \
+    "$HERE/" "$DEST/"
+
+# The shell caches compiled QML.  A plugin rescan does not pick up a
+# changed file; a full restart does.  Validation runs against the copy
+# that will actually be loaded.
+OMARCHY_PATH=/usr/share/omarchy omarchy plugin validate "$DEST"
+
+if [[ "${1:-}" != "--no-restart" ]]; then
+    omarchy restart shell
+fi
+
+echo "deploy: $ID -> $DEST"

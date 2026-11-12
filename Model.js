@@ -43,13 +43,15 @@ function parseJsonArray(text) {
 //
 // The CLI reports these separately:
 //   signal.streaming  a scrcpy process holds the sink
-//   signal.signal      the loopback is carrying frames
-//   signal.frame       a frame was read back from the device
+//   signal.signal     the loopback has a writer attached to it
+//   signal.frame      a frame was read and it has a picture in it
 //
-// A process can be alive while the phone's camera HAL has dropped the
-// camera, which is the failure that kept happening here: the stream
-// survived, the picture did not. The icon must not say "streaming" in that
-// state, because the user would believe they have a webcam and do not.
+// The last two are different questions, and treating them as one was a
+// real bug: the loopback has a writer while the phone's camera HAL has
+// dropped the camera, and that writer fills the device with flat black
+// frames.  "A writer is attached" is true there; "there is a picture" is
+// not.  The icon must not say "streaming" in that state, because the
+// user would believe they have a webcam and do not.
 function streamState(status) {
   var signal = isPlainObject(status.signal) ? status.signal : {};
   var host = isPlainObject(status.host) ? status.host : {};
@@ -58,9 +60,10 @@ function streamState(status) {
   var carrying = signal.signal === true;
   var frame = signal.frame === true;
 
+  // Live needs all three.  Anything else that still has a stream process
+  // is the failure state the icon exists to surface.
   var state = "idle";
-  if (streaming && carrying && frame) state = "live";
-  else if (streaming && carrying) state = "streaming";
+  if (streaming && frame) state = "live";
   else if (streaming) state = "no-signal";
 
   return {
@@ -72,10 +75,13 @@ function streamState(status) {
       : (typeof host.sink === "string" ? host.sink : ""),
     format: typeof host.sink_format === "string" ? host.sink_format : "",
     problems: isPlainArray(host.problems) ? host.problems : [],
-    // A stream running with no picture is the state worth surfacing, because
-    // the process list still shows scrcpy and the user has no other clue.
+    // A stream running with no picture is the state worth surfacing,
+    // because the process list still shows scrcpy and the user has no
+    // other clue.  Which half failed decides what to tell them.
     detail: state === "no-signal"
-      ? "The stream is running but no frames are arriving. The phone may have gone to sleep, or another app took the camera."
+      ? (carrying
+        ? "The stream is running and the loopback is being written to, but the picture is flat. The phone may have gone to sleep, or another app took the camera."
+        : "The stream process is running but nothing is writing frames into the loopback.")
       : ""
   };
 }
