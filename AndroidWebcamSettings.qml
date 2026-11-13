@@ -1,7 +1,6 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import QtMultimedia
 import qs.Ui
 import qs.Commons
 import qs.Commons as Commons
@@ -380,6 +379,17 @@ Item {
     }
   }
 
+  // The preview window. WAYLAND_DISPLAY is inherited from the shell, so only
+  // the video driver has to be named: without it SDL looks for X11, finds
+  // none, and ffplay exits before it draws anything.
+  Process {
+    id: previewProc
+    command: ["ffplay", "-f", "v4l2", "-i", "/dev/video0",
+              "-window_title", "Phone camera", "-loglevel", "error",
+              "-x", "960", "-y", "540"]
+    environment: ["SDL_VIDEODRIVER=wayland"]
+  }
+
   // Read a frame back from the device. A running process is not proof.
   Process {
     id: frameProc
@@ -442,39 +452,34 @@ Item {
       width: parent.width
     }
 
-    // --- the preview -------------------------------------------------------
+    // --- the preview window -----------------------------------------------
     //
-    // The window this plugin exists to give. Every number further down is
-    // a measurement of this picture, and a number the user cannot check
-    // against the thing it describes is a number they have to trust.
-    //
-    // Video, not a slideshow. The device is read by a media player, so the
-    // preview is the stream: the same frames a conferencing app gets, at
-    // whatever rate the phone sends them. A still refreshed on a timer was
-    // tried and it stutters, because a timer is not a frame clock.
-    VideoOutput {
-      id: preview
+    // A real window, because the picture is the one thing this panel cannot
+    // draw itself. Quickshell blackholes QtMultimedia, so a media player in
+    // QML does not work; a still refreshed on a timer is a slideshow, and it
+    // stutters, which is what the first version was and it showed. ffplay
+    // opens a window over the loopback device and shows the stream itself,
+    // at the rate the phone sends it.
+    Button {
       width: root.width
-      // 16:9 from the card's width, so the box is the same shape whatever
-      // the phone's actual aspect is, and the letters never stretch.
-      height: Math.round(width * 9 / 16)
-      visible: root.state.streaming || previewFeed.hasVideo
-      fillMode: VideoOutput.PreserveAspectFit
-    }
-
-    // The feed. The source is set only while something is streaming,
-    // because a loopback with no writer has no frames to give and the
-    // pipeline would sit waiting on it forever.
-    MediaPlayer {
-      id: previewFeed
-      source: root.state.streaming ? "v4l2:///dev/video0" : ""
-      videoOutput: preview
+      text: previewProc.running ? "The preview window is open" : "Show the preview"
+      iconText: ""
+      foreground: root.foreground
+      accent: Commons.Color.accent
+      fontFamily: root.fontFamily
+      fontSize: Style.font.body
+      leftAlign: true
+      focusable: true
+      // Only while something is streaming: a loopback with no writer has no
+      // frames, and the window would be a rectangle of nothing.
+      enabled: root.state.streaming && !previewProc.running
+      onClicked: previewProc.running = true
     }
 
     Text {
-      visible: !root.state.streaming && !(root.frameResult && root.frameResult.ok === true)
+      visible: !root.state.streaming
       textFormat: Text.PlainText
-      text: "Start the webcam and the picture from the phone appears here."
+      text: "Start the webcam, then open the preview window to see the picture from the phone."
       color: Qt.darker(root.foreground, 1.5)
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
