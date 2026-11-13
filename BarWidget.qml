@@ -272,7 +272,12 @@ Panel {
           // functions the icon uses, so the service-vs-CLI decision is
           // made once and the two surfaces cannot fight over the camera.
           onRequestStart: function(args) { root.startStream(args) }
-          onRequestStop: root.stopStream()
+          // A function, not a call.  `onRequestStop: root.stopStream()` would
+          // invoke stopStream() the moment the panel's content is built -- which
+          // stopped the camera every time the panel was opened for the first
+          // time in a shell session -- and then leave the property holding the
+          // call's return value, undefined, so the button did nothing after that.
+          onRequestStop: function() { root.stopStream() }
           // Re-checked on every open: the CLI can be installed or removed
           // while the shell keeps running.
           onVisibleChanged: if (visible) settings.recheckCli()
