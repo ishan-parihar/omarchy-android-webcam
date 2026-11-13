@@ -303,67 +303,6 @@ function bitRateChoices() {
   ];
 }
 
-// The phones worth offering, from `android discover --json`.
-//
-// The CLI answers with one row per candidate it found, and a candidate is
-// not a phone: the phone's wireless-debugging port is randomized on every
-// reconnect, so yesterday's port answers with "connection refused" today,
-// and a scan of the subnet reports every host that has any adb port at all.
-//
-// So a row is offered only when it has somewhere to connect to, and it is
-// labelled with what was last seen on it rather than with what answered
-// just now -- the last good thing the CLI saw is the reason to try it, not
-// the probe's "refused".
-function discoverDevices(rows) {
-  var list = isPlainArray(rows) ? rows : [];
-  var byHost = {};
-  var out = [];
-  for (var i = 0; i < list.length; i++) {
-    var row = isPlainObject(list[i]) ? list[i] : {};
-    // "host" is the mDNS name, and the CLI reports it as "unknown" when it
-    // only has the address.  The address is the thing that can be dialled.
-    var host = typeof row.address === "string" && row.address !== ""
-      ? row.address
-      : (typeof row.host === "string" ? row.host : "");
-    if (host === "" || host === "unknown") continue;
-    var port = typeof row.port === "number" ? row.port : 0;
-    var lastSeen = typeof row.last_seen_mode === "string" ? row.last_seen_mode : "";
-    if (port <= 0 && lastSeen !== "plain" && lastSeen !== "tls") continue;
-
-    // One row per host, because a connect is to a host: the CLI picks the
-    // port itself, and the phone advertises a plain and a TLS endpoint
-    // that are both "this phone".  Two rows for one phone are two ways to
-    // be wrong.
-    //
-    // When a host has both, the TLS one is kept: on this phone the plain
-    // endpoint is the older pairing, and the CLI prefers TLS anyway.
-    var existing = byHost[host];
-    if (existing) {
-      if (existing.lastSeen !== "tls" && lastSeen === "tls") existing.lastSeen = "tls";
-      if (row.reachable === true) existing.reachable = true;
-      continue;
-    }
-    var entry = {
-      host: host,
-      lastSeen: lastSeen,
-      reachable: row.reachable === true
-    };
-    byHost[host] = entry;
-    out.push(entry);
-  }
-  out.sort(function(a, b) {
-    if (a.reachable !== b.reachable) return a.reachable ? -1 : 1;
-    if (a.lastSeen !== b.lastSeen) return a.lastSeen === "tls" ? -1 : 1;
-    return a.host < b.host ? -1 : 1;
-  });
-  return out.map(function(e) {
-    var label = e.host;
-    if (e.lastSeen === "tls") label += "  · TLS";
-    else if (e.lastSeen === "plain") label += "  · plain";
-    return { host: e.host, reachable: e.reachable, label: label };
-  });
-}
-
 // What the phone connection looks like, from `android status --json`.
 //
 // The two halves the panel needs are separate: whether anything is
@@ -387,4 +326,21 @@ function deviceState(status) {
     // worked, which is the best default a connect button can have.
     lastKnown: typeof root.last_known === "string" ? root.last_known : ""
   };
+}
+
+// The argv a start or a restart needs, from a settings object.
+//
+// Both the panel and the bar widget build this, so a value the panel shows
+// and the value the CLI is told are produced by the same code. A stream is
+// what its argv says, so two different ways to build one argv is two
+// different streams.
+function argvFrom(settings) {
+  var s = isPlainObject(settings) ? settings : {};
+  var args = ["--facing", typeof s.facing === "string" && s.facing !== "" ? s.facing : "front",
+              "--size", typeof s.size === "string" && s.size !== "" ? s.size : "1280x720",
+              "--fps", String(s.fps === undefined || s.fps === null || s.fps === "" ? 30 : s.fps),
+              "--bit-rate", typeof s.bitRate === "string" && s.bitRate !== "" ? s.bitRate : "8M"];
+  if (s.torch) args.push("--torch");
+  if (s.audio) args.push("--with-audio");
+  return args;
 }

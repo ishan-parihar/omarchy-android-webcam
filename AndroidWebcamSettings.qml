@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import QtMultimedia
 import qs.Ui
 import qs.Commons
 import qs.Commons as Commons
@@ -41,26 +42,21 @@ Item {
   property var onRefreshDevice: null
   readonly property var device: Model.deviceState(deviceStatus)
 
-  // The phones the last find turned up, and what a find or a connect is
-  // doing. Both are slow: a find sweeps for ports the mDNS record no longer
-  // advertises, and a connect waits out an authorization prompt on the
-  // phone's own screen.
-  property var devices: []
-  property bool finding: false
+  // What a connect is doing, and what it said. Both answers matter: a
+  // connect is slow (it sweeps for the port the phone drew this time, and
+  // waits out an authorization prompt on the phone's own screen), and a
+  // failure that says only "failed" leaves the user with nothing to check.
   property bool connecting: false
   property string connectNote: ""
-
-  // The frame the preview shows, and the counter that makes the Image read
-  // it again.  A PNG written under an unchanged path is not news to Qt, so
-  // without the counter the preview would show its first frame forever.
-  property int frameRev: 0
-  readonly property string framePath:
-      Quickshell.env("XDG_STATE_HOME") + "/android-scrcpy-control/frame.png"
 
   // Set by the bar widget, which owns the start and stop processes, so the
   // panel's primary action routes through the same code the bar icon uses.
   property var onRequestStart: null
   property var onRequestStop: null
+  // New settings under a running stream, which means a restart: the widget
+  // owns the start and stop processes, so it is the widget that sequences
+  // them.
+  property var onRequestRestart: null
 
   readonly property var state: Model.streamState(status)
   readonly property var running: Model.runningSettings(status)
@@ -177,42 +173,53 @@ Item {
     }
   }
 
-  // --- finding and connecting the phone ------------------------------------
+  // --- connecting the phone -----------------------------------------------
   //
-  // The skill's CLI already knows how to find a phone: it keeps the last
-  // address that worked, it asks the mDNS group, and it sweeps the subnet
-  // for the randomized port.  The panel calls it rather than inventing a
-  // second discovery that could answer differently and be believed.
+  // One button, and no address to choose. The skill's CLI already does the
+  // whole search: it asks the mDNS group, it remembers the last address
+  // that worked, and it sweeps the neighborhood for the port the phone
+  // drew this time. Offering the user a list of addresses would be offering
+  // them a choice only the CLI can make, with a failure mode for every one
+  // they pick wrong -- so it is not offered.
   //
-  // Each of these is an argv array like every other call here, so nothing
-  // an address off the network could contain is read as shell syntax.
+  // The call is an argv array like every other one here, so nothing an
+  // address off the network could contain is read as shell syntax.
 
   Process {
-    id: discoverProc
-    command: [root.cli, "discover", "--json"]
+    id: connectProc
+    command: [root.cli, "connect", "--json"]
     stdout: StdioCollector {
       onStreamFinished: {
-        root.devices = Model.discoverDevices(Model.parseJsonArray(text));
-        root.connectNote = root.devices.length
-          ? ("Found " + root.devices.length + " address(es) to try.")
-          : "No phone answered. Check the phone is on the same network with wireless debugging on.";
+        var report = Model.parseJsonObject(text);
+        if (report.ok === true) {
+          root.connectNote = "Connected.";
+        } else {
+          // The CLI's own reason, which names the endpoint it tried and
+          // what it heard, rather than "failed".
+          var errors = Model.isPlainArray(report.errors) ? report.errors : [];
+          var last = errors.length ? errors[errors.length - 1] : null;
+          var why = (last && typeof last === "object" && typeof last.reason === "string")
+            ? last.reason : "Nothing answered.";
+          root.connectNote = "Could not connect: " + why
+              + " Check the phone is on the same network with wireless debugging on.";
+        }
       }
     }
     onExited: function(exitCode) {
-      root.finding = false;
-      // 127 is a missing CLI, which is said plainly elsewhere.
-      if (exitCode === 127) root.cliMissing = true;
+      root.connecting = false;
+      // The connection, or the failure of it, changes what the widget
+      // reads, so the widget is asked for its answer rather than left to
+      // catch up on its own clock.
+      if (root.onRefreshDevice) root.onRefreshDevice();
     }
   }
 
-  function findPhone() {
-    if (discoverProc.running) return;
-    // The last rows stay up while the new sweep runs. Clearing them first
-    // would empty the panel under the user's cursor for twenty seconds,
-    // which reads as "the plugin lost the phone" rather than "it is looking".
-    root.connectNote = "Looking for the phone...";
-    root.finding = true;
-    discoverProc.running = true;
+  function connectPhone() {
+    if (connectProc.running) return;
+    root.connectNote = "Looking for the phone... It can take a minute, because "
+        + "the phone picks a new port every time.";
+    root.connecting = true;
+    connectProc.running = true;
   }
 
   // Everything that has to be re-read when the panel opens.
@@ -223,81 +230,20 @@ Item {
   // signal, which fires every time.
   function refreshOnOpen() {
     if (root.cliMissing || !whichProc.running) recheckCli();
+    if (root.onRefreshDevice) root.onRefreshDevice();
     // The panel is the surface that fixes a missing phone, so on an open
     // with no phone it goes looking without being asked.
-    if (root.onRefreshDevice) root.onRefreshDevice();
-    if (!root.device.connected) findPhone();
+    if (!root.device.connected) connectPhone();
   }
 
-  // Connect to one address.  The host is set before the process starts
-  // rather than inside the command, because a command binding that changes
-  // while the process runs would restart it.
-  Process {
-    id: connectProc
-    property string targetHost: ""
-    command: [root.cli, "connect", "--host", connectProc.targetHost, "--json"]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var report = Model.parseJsonObject(text);
-        if (report.ok === true) root.connectNote = "Connected.";
-        else root.connectNote = "Could not connect to " + connectProc.targetHost
-            + (report.detail ? ": " + report.detail : ".");
-      }
-    }
-    onExited: function(exitCode) {
-      root.connecting = false;
-      // The connection, or the failure, changes what the widget reads, so
-      // the widget is asked for its answer rather than left to catch up
-      // on its own clock.
-      if (root.onRefreshDevice) root.onRefreshDevice();
-    }
-  }
-
-  function connectTo(host) {
-    if (connectProc.running || host === "") return;
-    connectProc.targetHost = host;
-    root.connectNote = "Connecting to " + host
-        + "... Approve it on the phone if it asks.";
-    root.connecting = true;
-    connectProc.running = true;
-  }
-
-  // Keep looking until something answers.  This is the one path that needs
-  // no address at all, which is the point of it: a phone that just
-  // randomized its port is found by waiting, not by knowing.
-  Process {
-    id: waitProc
-    command: [root.cli, "wait", "--timeout", "90", "--json"]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var report = Model.parseJsonObject(text);
-        root.connectNote = report.ok === true
-          ? "Found a phone."
-          : "Nothing answered in 90 seconds.";
-        root.finding = false;
-      }
-    }
-    onExited: function(exitCode) {
-      root.finding = false;
-      if (root.onRefreshDevice) root.onRefreshDevice();
-    }
-  }
-
-  function waitForPhone() {
-    if (waitProc.running) return;
-    root.connectNote = "Waiting for the phone...";
-    root.finding = true;
-    waitProc.running = true;
-  }
-
-  // A find on the panel's own clock, but only while the panel is open and
-  // there is no phone: a network sweep every few seconds is expensive, and
-  // it is pointless once the thing it is looking for is connected.
+  // Keep trying on the panel's own clock, but only while the panel is open
+  // and there is no phone: a network sweep every few seconds is expensive,
+  // and it is pointless once the thing it is looking for is connected.
   Timer {
     interval: 90000
-    running: root.visible && !root.device.connected && !root.finding
+    running: root.visible && !root.device.connected && !root.connecting
     repeat: true
-    onTriggered: findPhone()
+    onTriggered: connectPhone()
   }
 
   // A fast poll for the stream, a slow one for the rest. A phone that goes
@@ -364,19 +310,6 @@ Item {
   // previous choice. The CLI then validates the arguments and refuses
   // before anything runs, so a bad value can never be recorded as if it
   // worked.
-  function persist() {
-    var out = {
-      facing: root.facing,
-      size: root.size,
-      fps: root.fps,
-      bitRate: root.bitRate,
-      torch: root.torch,
-      audio: root.audio
-    };
-    root.savedSettings = out;
-    settingsFile.setText(JSON.stringify(out, null, 2) + "\n");
-  }
-
   // Record one choice.
   //
   // The effective values above are read-only views, so a control cannot
@@ -386,11 +319,11 @@ Item {
   // reloads it and every binding updates from the file, which is also
   // what the service reads.
   //
-  // A running stream's settings are the running stream's: changing them
-  // under it would do nothing, so the controls are disabled while it
-  // runs and this refuses the write rather than pretending.
+  // Changing one of these while the stream runs has to be more than a
+  // write: a running stream is doing what its argv says, so the choice
+  // takes effect by restarting it. A panel that accepted the click and
+  // changed nothing under a live picture would be a control that lies.
   function choose(key, value) {
-    if (root.state.streaming) return;
     var out = {
       facing: root.facing,
       size: root.size,
@@ -402,6 +335,7 @@ Item {
     out[key] = value;
     root.savedSettings = out;
     settingsFile.setText(JSON.stringify(out, null, 2) + "\n");
+    if (root.state.streaming && root.onRequestRestart) root.onRequestRestart(out);
   }
 
   // Whether the durable service is the camera's owner.
@@ -420,10 +354,10 @@ Item {
     if (root.cliMissing) return;
     persist();
     if (root.onRequestStart) {
-      root.onRequestStart(["--facing", root.facing, "--size", root.size,
-                          "--fps", root.fps, "--bit-rate", root.bitRate]
-                         .concat(root.torch ? ["--torch"] : [])
-                         .concat(root.audio ? ["--with-audio"] : []));
+      root.onRequestStart(Model.argvFrom({
+        facing: root.facing, size: root.size, fps: root.fps,
+        bitRate: root.bitRate, torch: root.torch, audio: root.audio
+      }));
     }
   }
 
@@ -456,27 +390,9 @@ Item {
       onStreamFinished: {
         var report = Model.parseJsonObject(text);
         root.frameResult = report;
-        if (report.ok) {
-          root.lastFrameAt = Date.now();
-          // The one that makes the preview read the new frame.  The write has
-          // already finished by the time this runs, so the Image never shows
-          // half a PNG.
-          root.frameRev += 1;
-        }
+        if (report.ok) root.lastFrameAt = Date.now();
       }
     }
-  }
-
-  // The preview's refresh loop. A capture is a whole read of the device, so
-  // this is seconds apart and it is called a preview rather than a video.
-  // It runs only while something is streaming: reading an idle loopback is
-  // the read that hangs, and there is no picture to show for it.
-  Timer {
-    interval: 3000
-    running: root.state.streaming
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: if (!frameProc.running) frameProc.running = true
   }
 
   // What the last capture found.
@@ -532,21 +448,27 @@ Item {
     // a measurement of this picture, and a number the user cannot check
     // against the thing it describes is a number they have to trust.
     //
-    // The frame comes from the CLI's own capture, which is the same read
-    // that measures the brightness, so the picture and the numbers under
-    // it are one look at the device and cannot disagree.
-    Image {
+    // Video, not a slideshow. The device is read by a media player, so the
+    // preview is the stream: the same frames a conferencing app gets, at
+    // whatever rate the phone sends them. A still refreshed on a timer was
+    // tried and it stutters, because a timer is not a frame clock.
+    VideoOutput {
+      id: preview
       width: root.width
       // 16:9 from the card's width, so the box is the same shape whatever
       // the phone's actual aspect is, and the letters never stretch.
       height: Math.round(width * 9 / 16)
-      visible: root.state.streaming || root.frameResult.ok === true
-      fillMode: Image.PreserveAspectFit
-      cache: false
-      // "?v=" is not a query: it is what makes Qt read the file again.  A
-      // PNG rewritten under an unchanged path is not news to the image
-      // loader, and this would show only its first frame.
-      source: "file://" + root.framePath + "?v=" + root.frameRev
+      visible: root.state.streaming || previewFeed.hasVideo
+      fillMode: VideoOutput.PreserveAspectFit
+    }
+
+    // The feed. The source is set only while something is streaming,
+    // because a loopback with no writer has no frames to give and the
+    // pipeline would sit waiting on it forever.
+    MediaPlayer {
+      id: previewFeed
+      source: root.state.streaming ? "v4l2:///dev/video0" : ""
+      videoOutput: preview
     }
 
     Text {
@@ -586,9 +508,13 @@ Item {
       width: parent.width
     }
 
+    // The one button. No address to pick, no port to know: the CLI's own
+    // search decides, and the panel reports what it said.
     Button {
       width: root.width
-      text: root.finding ? "Looking..." : "Find the phone"
+      text: root.device.connected
+        ? "Reconnect the phone"
+        : (root.connecting ? "Connecting..." : "Connect the phone")
       iconText: ""
       foreground: root.foreground
       accent: Commons.Color.accent
@@ -596,44 +522,7 @@ Item {
       fontSize: Style.font.body
       leftAlign: true
       focusable: true
-      onClicked: findPhone()
-    }
-
-    // The addresses the last find turned up, best first.  A host the scan
-    // can reach is offered ahead of one that only used to answer, because
-    // the phone randomizes its port on every reconnect.
-    Repeater {
-      model: root.devices
-
-      delegate: Button {
-        required property var modelData
-
-        width: root.width
-        leftAlign: true
-        text: "Connect to " + modelData.host
-            + (modelData.reachable ? "" : "  · not answering")
-        foreground: root.foreground
-        accent: Commons.Color.accent
-        fontFamily: root.fontFamily
-        fontSize: Style.font.body
-        onClicked: connectTo(modelData.host)
-      }
-    }
-
-    // The path that needs no address at all, which is the one worth having
-    // when the port changed again and the find above shows something the
-    // user does not recognize.
-    Button {
-      width: root.width
-      leftAlign: true
-      text: "Wait for the phone"
-      iconText: ""
-      foreground: root.foreground
-      accent: Commons.Color.accent
-      fontFamily: root.fontFamily
-      fontSize: Style.font.body
-      enabled: !root.finding
-      onClicked: waitForPhone()
+      onClicked: connectPhone()
     }
 
     Text {
@@ -788,7 +677,7 @@ Item {
     Text {
       visible: root.state.streaming
       textFormat: Text.PlainText
-      text: "These are read from the running stream. Stop it to change them."
+      text: "These are read from the running stream. Changing one restarts it."
       color: Qt.darker(root.foreground, 1.5)
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
@@ -798,10 +687,6 @@ Item {
 
     ButtonGroup {
       width: parent.width
-      // A running stream owns these values: its argv is what it is
-      // doing, and writing a different choice under it would change
-      // nothing until the next start.  Disabled is the honest state.
-      enabled: !root.state.streaming
       options: Model.facingChoices(root.cameras)
       value: root.facing
       foreground: root.foreground
@@ -812,7 +697,6 @@ Item {
 
     ButtonGroup {
       width: parent.width
-      enabled: !root.state.streaming
       options: root.sizeChoices.map(function(s) { return { value: s, label: s }; })
       value: root.size
       foreground: root.foreground
@@ -823,7 +707,6 @@ Item {
 
     ButtonGroup {
       width: parent.width
-      enabled: !root.state.streaming
       options: root.fpsNumbers.length
         ? root.fpsNumbers.map(function(n) { return { value: String(n), label: n + " fps" }; })
         : [{ value: "30", label: "30 fps" }]
@@ -836,7 +719,6 @@ Item {
 
     ButtonGroup {
       width: parent.width
-      enabled: !root.state.streaming
       options: Model.bitRateChoices()
       value: root.bitRate
       foreground: root.foreground
@@ -861,7 +743,6 @@ Item {
       label: "Torch"
       description: "The camera light. Back camera only. Applies on the next start."
       checked: root.torch
-      enabled: !root.state.streaming
       hasCursor: true
       foreground: root.foreground
       accent: Commons.Color.accent
@@ -873,7 +754,6 @@ Item {
       label: "Phone microphone"
       description: "Forward the phone's microphone too. It is routed through a null sink, so it does not play out your speakers."
       checked: root.audio
-      enabled: !root.state.streaming
       hasCursor: true
       foreground: root.foreground
       accent: Commons.Color.accent

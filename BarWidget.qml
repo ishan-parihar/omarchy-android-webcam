@@ -214,6 +214,34 @@ Panel {
     stopProc.running = true;
   }
 
+  // New settings under a running stream, which means a restart: a stream is
+  // doing what its argv says, so changing a size or a facing has to end this
+  // one and start the new one for the change to be real.
+  //
+  // The service restart is one systemd call and it is atomic, so there is no
+  // window where the device is held by a half-dead stream. The CLI path has
+  // to sequence it, because `webcam stop` lets go of the loopback device as
+  // it exits and the next start needs the device free.
+  function restartStream(args) {
+    restartProc.args = args || [];
+    if (root.serviceInstalled) {
+      serviceAction.verb = "restart";
+      serviceAction.running = true;
+      return;
+    }
+    restartPending = true;
+    stopProc.running = true;
+    // The stop's exit is what starts the new one.
+  }
+
+  Process {
+    id: restartProc
+    property var args: []
+    onExited: function(exitCode) {
+      if (!statusProc.running) statusProc.running = true;
+    }
+  }
+
   readonly property string settingsPath:
       Quickshell.env("XDG_STATE_HOME") + "/android-scrcpy-control/webcam-settings.json"
 
@@ -233,7 +261,20 @@ Panel {
     stdout: StdioCollector {
       onStreamFinished: if (!statusProc.running) statusProc.running = true
     }
+    onExited: function(exitCode) {
+      // A restart in flight, not just a stop: the device is free now, so
+      // start the stream the new settings describe.
+      if (restartPending && !startProc.running) {
+        restartPending = false;
+        startProc.args = restartProc.args.slice();
+        startProc.running = true;
+      }
+    }
   }
+
+  // Whether the last stop is the first half of a restart.  A plain stop
+  // never starts anything, and a restart never leaves it behind.
+  property bool restartPending: false
 
   Process {
     id: serviceAction
@@ -313,6 +354,8 @@ Panel {
           // time in a shell session -- and then leave the property holding the
           // call's return value, undefined, so the button did nothing after that.
           onRequestStop: function() { root.stopStream() }
+          // A function, not a call, for the same reason as onRequestStop.
+          onRequestRestart: function(settings) { root.restartStream(Model.argvFrom(settings)) }
           // Re-checked on every open: the CLI can be installed or removed
           // while the shell keeps running, the phone can connect or drop
           // while the shell is running, and the phone is the one input a
