@@ -13,11 +13,10 @@ settings, where the camera, the resolution, the frame rate, the bit rate,
 the torch and the phone's microphone are all picked from what the phone
 actually supports, and where the camera your apps use can be chosen.
 
-The panel also shows the picture, not just numbers about it: a live video
-surface over the loopback device, so what you see in the panel is the stream
-a conferencing app sees. And if there is no phone, the panel finds it: one
-button, no address to pick, because the CLI's own search already does that
-and the panel reports what it said.
+The panel also opens a window onto the stream, so the picture can be seen
+rather than inferred from numbers. And if there is no phone, the panel finds
+it: one button, no address to pick, because the CLI's own search already does
+that and the panel reports what it said.
 
 Changing a camera, size, frame rate, bit rate, torch or the microphone while
 the stream is running restarts the stream with the new setting. A panel that
@@ -64,14 +63,20 @@ omarchy bar move ishanp.android-webcam-pro --section right
 
 ## What the panel shows
 
-### The preview
+### The preview window
 
-A video surface over the loopback device, so the picture in the panel is the
-stream a conferencing app sees, at the rate the phone sends it. A still
-refreshed on a timer is what this was first, and it stuttered, because a
-timer is not a frame clock. The source is set only while something is
-streaming: a loopback with no writer has no frames to give, and the pipeline
-would sit waiting on it forever.
+A window, not a picture inside the panel. The plugin cannot draw video
+itself — Quickshell blackholes the QtMultimedia import at load time, with no
+error shown in the panel — so the preview is `ffplay` over the loopback
+device: the frames a conferencing app gets, at the rate the phone sends
+them, with no timer in between. A still refreshed on a timer is what this
+was first, and it stuttered, because a timer is not a frame clock.
+
+The video driver has to be named (`SDL_VIDEODRIVER=wayland`) or SDL looks
+for X11, finds none, and exits before it draws anything. `WAYLAND_DISPLAY`
+is inherited from the shell. The button is enabled only while something is
+streaming, because a loopback with no writer has no frames and the window
+would be a rectangle of nothing.
 
 ### The phone
 
