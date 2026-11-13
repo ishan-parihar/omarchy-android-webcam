@@ -13,6 +13,17 @@ settings, where the camera, the resolution, the frame rate, the bit rate,
 the torch and the phone's microphone are all picked from what the phone
 actually supports, and where the camera your apps use can be chosen.
 
+The panel also shows the picture, not just numbers about it: a live video
+surface over the loopback device, so what you see in the panel is the stream
+a conferencing app sees. And if there is no phone, the panel finds it: one
+button, no address to pick, because the CLI's own search already does that
+and the panel reports what it said.
+
+Changing a camera, size, frame rate, bit rate, torch or the microphone while
+the stream is running restarts the stream with the new setting. A panel that
+accepted the click and changed nothing under a live picture would be a
+control that lies.
+
 ## What it needs
 
 The plugin drives one command, the skill's own CLI:
@@ -53,6 +64,29 @@ omarchy bar move ishanp.android-webcam-pro --section right
 
 ## What the panel shows
 
+### The preview
+
+A video surface over the loopback device, so the picture in the panel is the
+stream a conferencing app sees, at the rate the phone sends it. A still
+refreshed on a timer is what this was first, and it stuttered, because a
+timer is not a frame clock. The source is set only while something is
+streaming: a loopback with no writer has no frames to give, and the pipeline
+would sit waiting on it forever.
+
+### The phone
+
+No phone, nothing else works, so this is the panel's other job. One button
+runs `android connect`, which already does the whole search: it asks the mDNS
+group, remembers the last address that worked, and sweeps the neighborhood
+for the port the phone drew this time. The panel does not offer addresses to
+pick, because the only thing that could decide between them is the CLI, and
+offering them gives the user a wrong click for every endpoint that no longer
+answers.
+
+A connect runs when the panel opens with no phone, and again every 90 seconds
+while the panel stays open with none. When it fails, the CLI's own reason is
+shown, which names what it tried and what it heard, rather than "failed".
+
 ### The stream
 
 A running process is not proof, so the panel reports four things
@@ -87,6 +121,11 @@ Facing, resolution and frame rate are read back from the running stream's
 argv when one is running, and from the saved settings when it is not. So the
 panel always shows what a start would actually use, and never a choice the
 GUI app has since changed.
+
+Changing one of them while the stream runs restarts the stream with the new
+value: the service restart is a single systemd call, and the CLI path is a
+stop whose exit starts the new one. Nothing is written that is not applied,
+and nothing is applied that was not written.
 
 The size and the rate are filtered to what the chosen camera reports, so an
 unsupported value is never offered. The higher bit rates are offered with a
