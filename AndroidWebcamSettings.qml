@@ -32,6 +32,31 @@ Item {
   property var status: ({})
   property string cli: "android"
 
+  // The phone connection, read by the bar widget on its slow timer.  The
+  // panel does not read it itself: two surfaces asking the same question get
+  // two answers, and the icon's tooltip and this panel would disagree.
+  property var deviceStatus: ({})
+  // A function, not a call.  `onRefreshDevice: barWidget...()` would run at
+  // build time and leave the property holding undefined.  See onRequestStop.
+  property var onRefreshDevice: null
+  readonly property var device: Model.deviceState(deviceStatus)
+
+  // The phones the last find turned up, and what a find or a connect is
+  // doing. Both are slow: a find sweeps for ports the mDNS record no longer
+  // advertises, and a connect waits out an authorization prompt on the
+  // phone's own screen.
+  property var devices: []
+  property bool finding: false
+  property bool connecting: false
+  property string connectNote: ""
+
+  // The frame the preview shows, and the counter that makes the Image read
+  // it again.  A PNG written under an unchanged path is not news to Qt, so
+  // without the counter the preview would show its first frame forever.
+  property int frameRev: 0
+  readonly property string framePath:
+      Quickshell.env("XDG_STATE_HOME") + "/android-scrcpy-control/frame.png"
+
   // Set by the bar widget, which owns the start and stop processes, so the
   // panel's primary action routes through the same code the bar icon uses.
   property var onRequestStart: null
@@ -152,6 +177,129 @@ Item {
     }
   }
 
+  // --- finding and connecting the phone ------------------------------------
+  //
+  // The skill's CLI already knows how to find a phone: it keeps the last
+  // address that worked, it asks the mDNS group, and it sweeps the subnet
+  // for the randomized port.  The panel calls it rather than inventing a
+  // second discovery that could answer differently and be believed.
+  //
+  // Each of these is an argv array like every other call here, so nothing
+  // an address off the network could contain is read as shell syntax.
+
+  Process {
+    id: discoverProc
+    command: [root.cli, "discover", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.devices = Model.discoverDevices(Model.parseJsonArray(text));
+        root.connectNote = root.devices.length
+          ? ("Found " + root.devices.length + " address(es) to try.")
+          : "No phone answered. Check the phone is on the same network with wireless debugging on.";
+      }
+    }
+    onExited: function(exitCode) {
+      root.finding = false;
+      // 127 is a missing CLI, which is said plainly elsewhere.
+      if (exitCode === 127) root.cliMissing = true;
+    }
+  }
+
+  function findPhone() {
+    if (discoverProc.running) return;
+    // The last rows stay up while the new sweep runs. Clearing them first
+    // would empty the panel under the user's cursor for twenty seconds,
+    // which reads as "the plugin lost the phone" rather than "it is looking".
+    root.connectNote = "Looking for the phone...";
+    root.finding = true;
+    discoverProc.running = true;
+  }
+
+  // Everything that has to be re-read when the panel opens.
+  //
+  // The panel's content is built the first time it opens and then kept, so
+  // `visible` never changes on a later open and an onVisibleChanged handler
+  // never fires.  The bar widget therefore calls this from its own open
+  // signal, which fires every time.
+  function refreshOnOpen() {
+    if (root.cliMissing || !whichProc.running) recheckCli();
+    // The panel is the surface that fixes a missing phone, so on an open
+    // with no phone it goes looking without being asked.
+    if (root.onRefreshDevice) root.onRefreshDevice();
+    if (!root.device.connected) findPhone();
+  }
+
+  // Connect to one address.  The host is set before the process starts
+  // rather than inside the command, because a command binding that changes
+  // while the process runs would restart it.
+  Process {
+    id: connectProc
+    property string targetHost: ""
+    command: [root.cli, "connect", "--host", connectProc.targetHost, "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var report = Model.parseJsonObject(text);
+        if (report.ok === true) root.connectNote = "Connected.";
+        else root.connectNote = "Could not connect to " + connectProc.targetHost
+            + (report.detail ? ": " + report.detail : ".");
+      }
+    }
+    onExited: function(exitCode) {
+      root.connecting = false;
+      // The connection, or the failure, changes what the widget reads, so
+      // the widget is asked for its answer rather than left to catch up
+      // on its own clock.
+      if (root.onRefreshDevice) root.onRefreshDevice();
+    }
+  }
+
+  function connectTo(host) {
+    if (connectProc.running || host === "") return;
+    connectProc.targetHost = host;
+    root.connectNote = "Connecting to " + host
+        + "... Approve it on the phone if it asks.";
+    root.connecting = true;
+    connectProc.running = true;
+  }
+
+  // Keep looking until something answers.  This is the one path that needs
+  // no address at all, which is the point of it: a phone that just
+  // randomized its port is found by waiting, not by knowing.
+  Process {
+    id: waitProc
+    command: [root.cli, "wait", "--timeout", "90", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var report = Model.parseJsonObject(text);
+        root.connectNote = report.ok === true
+          ? "Found a phone."
+          : "Nothing answered in 90 seconds.";
+        root.finding = false;
+      }
+    }
+    onExited: function(exitCode) {
+      root.finding = false;
+      if (root.onRefreshDevice) root.onRefreshDevice();
+    }
+  }
+
+  function waitForPhone() {
+    if (waitProc.running) return;
+    root.connectNote = "Waiting for the phone...";
+    root.finding = true;
+    waitProc.running = true;
+  }
+
+  // A find on the panel's own clock, but only while the panel is open and
+  // there is no phone: a network sweep every few seconds is expensive, and
+  // it is pointless once the thing it is looking for is connected.
+  Timer {
+    interval: 90000
+    running: root.visible && !root.device.connected && !root.finding
+    repeat: true
+    onTriggered: findPhone()
+  }
+
   // A fast poll for the stream, a slow one for the rest. A phone that goes
   // to sleep is worth noticing within seconds; a newly plugged camera is
   // not, and the reads are not free.
@@ -174,10 +322,10 @@ Item {
     }
   }
 
-  // The CLI's existence is checked once here and again every time the panel
-  // is opened, because the CLI can be installed or removed while the shell
-  // keeps running and a stale answer is the worst one to carry.
-  Component.onCompleted: recheckCli()
+  // The CLI's existence is checked once here (and again on every open, from
+  // refreshOnOpen at the bottom of this file), because the CLI can be
+  // installed or removed while the shell keeps running and a stale answer is
+  // the worst one to carry.
 
   // --- the settings file -----------------------------------------------------
   //
@@ -308,9 +456,27 @@ Item {
       onStreamFinished: {
         var report = Model.parseJsonObject(text);
         root.frameResult = report;
-        if (report.ok) root.lastFrameAt = Date.now();
+        if (report.ok) {
+          root.lastFrameAt = Date.now();
+          // The one that makes the preview read the new frame.  The write has
+          // already finished by the time this runs, so the Image never shows
+          // half a PNG.
+          root.frameRev += 1;
+        }
       }
     }
+  }
+
+  // The preview's refresh loop. A capture is a whole read of the device, so
+  // this is seconds apart and it is called a preview rather than a video.
+  // It runs only while something is streaming: reading an idle loopback is
+  // the read that hangs, and there is no picture to show for it.
+  Timer {
+    interval: 3000
+    running: root.state.streaming
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!frameProc.running) frameProc.running = true
   }
 
   // What the last capture found.
@@ -328,6 +494,11 @@ Item {
   readonly property string frameMean:
       (frameResult && frameResult.brightness && frameResult.brightness.mean !== undefined)
         ? String(frameResult.brightness.mean) : ""
+
+  // The first build of this panel is the first time it opens, so this is the
+  // one path that is guaranteed to run then: the bar widget's open signal
+  // fires before the content exists, so it cannot be the only way in.
+  Component.onCompleted: refreshOnOpen()
 
   // --- the UI ----------------------------------------------------------------
 
@@ -352,6 +523,127 @@ Item {
       font.family: root.fontFamily
       font.pixelSize: Style.font.title
       font.bold: true
+      width: parent.width
+    }
+
+    // --- the preview -------------------------------------------------------
+    //
+    // The window this plugin exists to give. Every number further down is
+    // a measurement of this picture, and a number the user cannot check
+    // against the thing it describes is a number they have to trust.
+    //
+    // The frame comes from the CLI's own capture, which is the same read
+    // that measures the brightness, so the picture and the numbers under
+    // it are one look at the device and cannot disagree.
+    Image {
+      width: root.width
+      // 16:9 from the card's width, so the box is the same shape whatever
+      // the phone's actual aspect is, and the letters never stretch.
+      height: Math.round(width * 9 / 16)
+      visible: root.state.streaming || root.frameResult.ok === true
+      fillMode: Image.PreserveAspectFit
+      cache: false
+      // "?v=" is not a query: it is what makes Qt read the file again.  A
+      // PNG rewritten under an unchanged path is not news to the image
+      // loader, and this would show only its first frame.
+      source: "file://" + root.framePath + "?v=" + root.frameRev
+    }
+
+    Text {
+      visible: !root.state.streaming && !(root.frameResult && root.frameResult.ok === true)
+      textFormat: Text.PlainText
+      text: "Start the webcam and the picture from the phone appears here."
+      color: Qt.darker(root.foreground, 1.5)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+      width: parent.width
+    }
+
+    // --- the phone ---------------------------------------------------------
+    //
+    // The rest of this panel is about the camera, and none of it works
+    // without a phone.  Discovering and connecting one is the skill's own
+    // job, so this panel runs the same CLI the skill does instead of a
+    // second discovery that could answer differently and be believed.
+    PanelSectionHeader {
+      text: "Phone"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      text: root.device.connected
+        ? ("Connected: " + root.device.model + (root.device.device !== "" ? " (" + root.device.device + ")" : ""))
+        : (root.device.anyDevice
+          ? "A phone is attached but not authorized. Check its screen for a prompt."
+          : "No phone connected. Everything below needs one.")
+      color: root.device.connected ? Commons.Color.accent : Commons.Color.urgent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+      width: parent.width
+    }
+
+    Button {
+      width: root.width
+      text: root.finding ? "Looking..." : "Find the phone"
+      iconText: ""
+      foreground: root.foreground
+      accent: Commons.Color.accent
+      fontFamily: root.fontFamily
+      fontSize: Style.font.body
+      leftAlign: true
+      focusable: true
+      onClicked: findPhone()
+    }
+
+    // The addresses the last find turned up, best first.  A host the scan
+    // can reach is offered ahead of one that only used to answer, because
+    // the phone randomizes its port on every reconnect.
+    Repeater {
+      model: root.devices
+
+      delegate: Button {
+        required property var modelData
+
+        width: root.width
+        leftAlign: true
+        text: "Connect to " + modelData.host
+            + (modelData.reachable ? "" : "  · not answering")
+        foreground: root.foreground
+        accent: Commons.Color.accent
+        fontFamily: root.fontFamily
+        fontSize: Style.font.body
+        onClicked: connectTo(modelData.host)
+      }
+    }
+
+    // The path that needs no address at all, which is the one worth having
+    // when the port changed again and the find above shows something the
+    // user does not recognize.
+    Button {
+      width: root.width
+      leftAlign: true
+      text: "Wait for the phone"
+      iconText: ""
+      foreground: root.foreground
+      accent: Commons.Color.accent
+      fontFamily: root.fontFamily
+      fontSize: Style.font.body
+      enabled: !root.finding
+      onClicked: waitForPhone()
+    }
+
+    Text {
+      visible: root.connectNote !== ""
+      textFormat: Text.PlainText
+      text: root.connectNote
+      color: Qt.darker(root.foreground, 1.5)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
       width: parent.width
     }
 

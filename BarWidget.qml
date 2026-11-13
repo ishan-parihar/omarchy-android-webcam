@@ -32,6 +32,13 @@ Panel {
   property var status: ({})
   readonly property var state: Model.streamState(status)
 
+  // The phone connection, from the same CLI. The camera cannot work
+  // without it, so "idle" and "idle because there is no phone" are two
+  // different things to say and the icon cannot tell them apart from the
+  // webcam status alone.
+  property var deviceStatus: ({})
+  readonly property var device: Model.deviceState(deviceStatus)
+
   readonly property bool live: state.state === "live"
   readonly property bool broken: state.state === "no-signal"
 
@@ -72,7 +79,28 @@ Panel {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: if (!serviceQuery.running) serviceQuery.running = true
+    onTriggered: {
+      if (!serviceQuery.running) serviceQuery.running = true;
+      // A slower read than the webcam status: a phone that swapped ports
+      // is worth noticing, but not every few seconds.
+      if (!deviceProc.running) deviceProc.running = true;
+    }
+  }
+
+  // `android status` is the CLI's own answer about the phone, which is what
+  // the panel's discover and connect controls need to show.
+  Process {
+    id: deviceProc
+    command: [root.cli, "status", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: root.deviceStatus = Model.parseJsonObject(text)
+    }
+  }
+
+  // Read the phone's state now rather than at the next tick of the slow
+  // timer.  Called after a connect, and when the panel opens.
+  function refreshDevice() {
+    if (!deviceProc.running) deviceProc.running = true;
   }
 
   // --- the CLI ---------------------------------------------------------------
@@ -139,7 +167,9 @@ Panel {
       ? "Phone camera: running but no frames"
       : (root.live
         ? "Phone camera: live on " + (root.state.sink || "the loopback device")
-        : "Phone camera: idle")
+        : (root.device.connected
+          ? "Phone camera: idle"
+          : "Phone camera: idle — no phone connected"))
 
     onPressed: function(btn) {
       if (btn === Qt.RightButton) {
@@ -265,6 +295,11 @@ Panel {
           fontFamily: root.fontFamily
           cli: root.cli
           status: root.status
+          // The phone connection, read by the widget on the slow timer.  The
+          // panel's discover and connect controls show this, and the icon's
+          // tooltip uses the same object so the two cannot disagree about
+          // whether there is a phone.
+          deviceStatus: root.deviceStatus
           // One owner decision, made by the bar widget, so the panel's
           // button and the icon cannot fight over the camera.
           serviceOwns: root.serviceInstalled
@@ -279,8 +314,27 @@ Panel {
           // call's return value, undefined, so the button did nothing after that.
           onRequestStop: function() { root.stopStream() }
           // Re-checked on every open: the CLI can be installed or removed
-          // while the shell keeps running.
-          onVisibleChanged: if (visible) settings.recheckCli()
+          // while the shell keeps running, the phone can connect or drop
+          // while the shell is running, and the phone is the one input a
+          // stale answer costs the user most.
+          //
+          // A function, not a call: `onRefreshDevice: root.refreshDevice()`
+          // would run once when the panel's content is built and leave the
+          // property holding undefined, which is the bug onRequestStop had.
+          onRefreshDevice: function() {
+            if (!deviceProc.running) deviceProc.running = true;
+          }
+          // Driven from here rather than from the panel's own `visible`,
+          // because the panel's content is built once and kept: an
+          // already-built panel reopening does not change `visible`, so a
+          // handler on it never fires.  `opened` is readonly, so it has no
+          // change handler of its own; the controller's `open` does.
+          Connections {
+            target: root.controller
+            function onOpenChanged() {
+              if (root.controller.open && settings) settings.refreshOnOpen();
+            }
+          }
         }
       }
     }
