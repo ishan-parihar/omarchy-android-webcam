@@ -480,7 +480,6 @@ Item {
       width: root.width
       text: previewProc.running ? "The preview window is open" : "Show the preview"
       iconText: ""
-      foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
       fontSize: Style.font.body
@@ -489,6 +488,11 @@ Item {
       // Only while something is streaming: a loopback with no writer has no
       // frames, and the window would be a rectangle of nothing.
       enabled: root.state.streaming && !previewProc.running
+      // The kit's Button paints no disabled state, so a button that cannot
+      // be pressed would look exactly like one that can. The label is
+      // dimmed to the caption's level to say so, because the click that
+      // does nothing is the thing the dim is there to prevent.
+      foreground: enabled ? root.foreground : Qt.darker(root.foreground, 1.6)
       onClicked: previewProc.running = true
     }
 

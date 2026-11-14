@@ -109,6 +109,21 @@ camera keeps its writer and produces a valid, completely flat frame. That is
 because it is exactly the state where a user believes they have a webcam and
 do not. `live` requires a real picture, not just a writer.
 
+### The shape of it
+
+The panel is capped at a height a screen can hold, with its content in a
+scroll view under the cap, because the content is longer than any screen:
+uncapped, the card grows to the full available height and then crops what
+is left, so the last sections do not exist as far as anyone can see. The
+wheel scrolls, and so do the arrow keys, because a panel taller than its
+card has to be reachable from the keyboard too.
+
+It also says one thing at a time. The connect button appears only when
+there is no phone to connect, and the connect note only while there is no
+phone either: a note that outlives the thing it describes is worse than
+no note, which is how the panel ended up telling the user it was looking
+for a phone while telling them, one line up, that it had found one.
+
 ### The camera on this PC
 
 The point of the plugin. A phone that streams but is not the camera the
