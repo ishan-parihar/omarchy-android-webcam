@@ -190,8 +190,12 @@ Item {
     stdout: StdioCollector {
       onStreamFinished: {
         var report = Model.parseJsonObject(text);
+        // Nothing on success: the phone line above turns into
+        // "Connected: <model>", which is the same news said once.  A
+        // "Connected." note under it is a second answer to a question the
+        // panel has already answered.
         if (report.ok === true) {
-          root.connectNote = "Connected.";
+          root.connectNote = "";
         } else {
           // The CLI's own reason, which names the endpoint it tried and
           // what it heard, rather than "failed".
@@ -351,7 +355,6 @@ Item {
   // widget drives the service when there is one and the CLI otherwise.
   function start() {
     if (root.cliMissing) return;
-    persist();
     if (root.onRequestStart) {
       root.onRequestStart(Model.argvFrom({
         facing: root.facing, size: root.size, fps: root.fps,
@@ -452,6 +455,19 @@ Item {
       width: parent.width
     }
 
+    // What the stream is putting on the loopback, and only while something
+    // is streaming: the format is the running stream's own output, and an
+    // idle loopback's leftover format describes nothing.
+    Text {
+      visible: root.state.streaming && root.state.format !== ""
+      textFormat: Text.PlainText
+      text: root.state.format
+      color: Qt.darker(root.foreground, 1.4)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      width: parent.width
+    }
+
     // --- the preview window -----------------------------------------------
     //
     // A real window, because the picture is the one thing this panel cannot
@@ -513,13 +529,16 @@ Item {
       width: parent.width
     }
 
-    // The one button. No address to pick, no port to know: the CLI's own
-    // search decides, and the panel reports what it said.
+    // The one button, and it is there only when it is needed.  No address
+    // to pick, no port to know: the CLI's own search decides, and the panel
+    // reports what it said.  While a phone is connected the line above
+    // already says so, and a "Reconnect the phone" button over it is a
+    // second thing saying the same thing -- so it goes away, and comes back
+    // by itself the moment the phone drops.
     Button {
       width: root.width
-      text: root.device.connected
-        ? "Reconnect the phone"
-        : (root.connecting ? "Connecting..." : "Connect the phone")
+      visible: !root.device.connected
+      text: root.connecting ? "Connecting..." : "Connect the phone"
       iconText: ""
       foreground: root.foreground
       accent: Commons.Color.accent
@@ -530,8 +549,14 @@ Item {
       onClicked: connectPhone()
     }
 
+    // What a connect said, and only while the phone is still missing.  A
+    // note that outlives the thing it describes is worse than no note: the
+    // panel kept saying "Looking for the phone..." over a line that said
+    // the phone was connected, because another path had found it while this
+    // command was still sweeping.  The header line is the answer once there
+    // is one, so the note gets out of its way.
     Text {
-      visible: root.connectNote !== ""
+      visible: root.connectNote !== "" && !root.device.connected
       textFormat: Text.PlainText
       text: root.connectNote
       color: Qt.darker(root.foreground, 1.5)
@@ -566,16 +591,6 @@ Item {
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       wrapMode: Text.WordWrap
-      width: parent.width
-    }
-
-    Text {
-      visible: root.state.format !== ""
-      textFormat: Text.PlainText
-      text: root.state.format
-      color: Qt.darker(root.foreground, 1.4)
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       width: parent.width
     }
 

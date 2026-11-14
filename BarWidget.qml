@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Ui
@@ -223,7 +224,7 @@ Panel {
   // to sequence it, because `webcam stop` lets go of the loopback device as
   // it exits and the next start needs the device free.
   function restartStream(args) {
-    restartProc.args = args || [];
+    restartArgs = args || [];
     if (root.serviceInstalled) {
       serviceAction.verb = "restart";
       serviceAction.running = true;
@@ -232,14 +233,6 @@ Panel {
     restartPending = true;
     stopProc.running = true;
     // The stop's exit is what starts the new one.
-  }
-
-  Process {
-    id: restartProc
-    property var args: []
-    onExited: function(exitCode) {
-      if (!statusProc.running) statusProc.running = true;
-    }
   }
 
   readonly property string settingsPath:
@@ -266,14 +259,16 @@ Panel {
       // start the stream the new settings describe.
       if (restartPending && !startProc.running) {
         restartPending = false;
-        startProc.args = restartProc.args.slice();
+        startProc.args = restartArgs.slice();
         startProc.running = true;
       }
     }
   }
 
-  // Whether the last stop is the first half of a restart.  A plain stop
+  // The argv the restarted stream should use, and whether the last
+  // stop is the first half of a restart.  A plain stop
   // never starts anything, and a restart never leaves it behind.
+  property var restartArgs: []
   property bool restartPending: false
 
   Process {
@@ -297,19 +292,24 @@ Panel {
     // descendant has active focus, so Qt never delivers a key to it.
     focusTarget: panel.loadedContent
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight)
+    // A cap, and scrolling under it. This panel's content is longer than any
+    // screen it can open on: uncapped, the card grows to the full available
+    // height and then crops whatever does not fit, which is what it did --
+    // the last sections were simply not on screen and there was no way to
+    // reach them.
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(620))
 
     // The panel's content is built the first time it opens, not at bar
     // startup. A bar widget exists on every monitor, and the settings
     // surface is the largest thing in this plugin.
     content: PanelKeyCatcher {
       id: keyCatcher
-      // The height comes from the content below, not from the panel: the
-      // panel measures the content to decide how tall the card is, so
-      // anchoring the height here would close the loop on itself and the
-      // card would never grow.
+      // The panel measures the content to decide how tall the card is, so the
+      // height reported here is the column's whole height and the ScrollView
+      // is what fits it into the card. Anchoring the height would close the
+      // loop on itself and the card would never grow.
       implicitHeight: column.implicitHeight
-      width: parent.width
+      anchors.fill: parent
 
       // The panel's own keys. Without a handler for close the surface eats
       // Escape, because PanelKeyCatcher claims every key it is given.
@@ -317,65 +317,81 @@ Panel {
       // Tab moves between the bar's panels, the way the first-party panels
       // do it.
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      // The settings surface has no cursor of its own, so the arrow keys
-      // are left alone rather than pretending to move something.
-      onMoveRequested: function(dx, dy) {}
+      // There is no cursor of its own to move between rows, so the arrow keys
+      // move the view instead: a panel taller than its card has to be
+      // reachable from the keyboard too, not only from the wheel.
+      onMoveRequested: function(dx, dy) {
+        var flick = scrollArea.contentItem
+        if (!flick || flick.contentY === undefined) return
+        var maxY = Math.max(0, (flick.contentHeight || 0) - flick.height)
+        flick.contentY = Math.max(0, Math.min(maxY, flick.contentY + dy * Style.space(48)))
+      }
 
-      Column {
-        id: column
-        width: parent.width
+      ScrollView {
+        id: scrollArea
+        anchors.fill: parent
+        clip: true
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        // A groove only when there is somewhere to scroll to, so a short
+        // panel does not grow one for nothing.
+        ScrollBar.vertical.policy: column.implicitHeight > height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
 
-        // Sibling QML files in a plugin directory are types in the same
-        // scope, so the settings surface is named directly rather than
-        // imported. No qmldir and no module name is needed.
-        AndroidWebcamSettings {
-          id: settings
-          width: parent.width
-          bar: root.bar
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          cli: root.cli
-          status: root.status
-          // The phone connection, read by the widget on the slow timer.  The
-          // panel's discover and connect controls show this, and the icon's
-          // tooltip uses the same object so the two cannot disagree about
-          // whether there is a phone.
-          deviceStatus: root.deviceStatus
-          // One owner decision, made by the bar widget, so the panel's
-          // button and the icon cannot fight over the camera.
-          serviceOwns: root.serviceInstalled
-          // The panel's primary action routes through the same two
-          // functions the icon uses, so the service-vs-CLI decision is
-          // made once and the two surfaces cannot fight over the camera.
-          onRequestStart: function(args) { root.startStream(args) }
-          // A function, not a call.  `onRequestStop: root.stopStream()` would
-          // invoke stopStream() the moment the panel's content is built -- which
-          // stopped the camera every time the panel was opened for the first
-          // time in a shell session -- and then leave the property holding the
-          // call's return value, undefined, so the button did nothing after that.
-          onRequestStop: function() { root.stopStream() }
-          // A function, not a call, for the same reason as onRequestStop.
-          onRequestRestart: function(settings) { root.restartStream(Model.argvFrom(settings)) }
-          // Re-checked on every open: the CLI can be installed or removed
-          // while the shell keeps running, the phone can connect or drop
-          // while the shell is running, and the phone is the one input a
-          // stale answer costs the user most.
-          //
-          // A function, not a call: `onRefreshDevice: root.refreshDevice()`
-          // would run once when the panel's content is built and leave the
-          // property holding undefined, which is the bug onRequestStop had.
-          onRefreshDevice: function() {
-            if (!deviceProc.running) deviceProc.running = true;
-          }
-          // Driven from here rather than from the panel's own `visible`,
-          // because the panel's content is built once and kept: an
-          // already-built panel reopening does not change `visible`, so a
-          // handler on it never fires.  `opened` is readonly, so it has no
-          // change handler of its own; the controller's `open` does.
-          Connections {
-            target: root.controller
-            function onOpenChanged() {
-              if (root.controller.open && settings) settings.refreshOnOpen();
+        Column {
+          id: column
+          width: scrollArea.availableWidth
+
+          // Sibling QML files in a plugin directory are types in the same
+          // scope, so the settings surface is named directly rather than
+          // imported. No qmldir and no module name is needed.
+          AndroidWebcamSettings {
+            id: settings
+            width: parent.width
+            bar: root.bar
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            cli: root.cli
+            status: root.status
+            // The phone connection, read by the widget on the slow timer.  The
+            // panel's discover and connect controls show this, and the icon's
+            // tooltip uses the same object so the two cannot disagree about
+            // whether there is a phone.
+            deviceStatus: root.deviceStatus
+            // One owner decision, made by the bar widget, so the panel's
+            // button and the icon cannot fight over the camera.
+            serviceOwns: root.serviceInstalled
+            // The panel's primary action routes through the same two
+            // functions the icon uses, so the service-vs-CLI decision is
+            // made once and the two surfaces cannot fight over the camera.
+            onRequestStart: function(args) { root.startStream(args) }
+            // A function, not a call.  `onRequestStop: root.stopStream()` would
+            // invoke stopStream() the moment the panel's content is built -- which
+            // stopped the camera every time the panel was opened for the first
+            // time in a shell session -- and then leave the property holding the
+            // call's return value, undefined, so the button did nothing after that.
+            onRequestStop: function() { root.stopStream() }
+            // A function, not a call, for the same reason as onRequestStop.
+            onRequestRestart: function(settings) { root.restartStream(Model.argvFrom(settings)) }
+            // Re-checked on every open: the CLI can be installed or removed
+            // while the shell keeps running, the phone can connect or drop
+            // while the shell is running, and the phone is the one input a
+            // stale answer costs the user most.
+            //
+            // A function, not a call: `onRefreshDevice: root.refreshDevice()`
+            // would run once when the panel's content is built and leave the
+            // property holding undefined, which is the bug onRequestStop had.
+            onRefreshDevice: function() {
+              if (!deviceProc.running) deviceProc.running = true;
+            }
+            // Driven from here rather than from the panel's own `visible`,
+            // because the panel's content is built once and kept: an
+            // already-built panel reopening does not change `visible`, so a
+            // handler on it never fires.  `opened` is readonly, so it has no
+            // change handler of its own; the controller's `open` does.
+            Connections {
+              target: root.controller
+              function onOpenChanged() {
+                if (root.controller.open && settings) settings.refreshOnOpen();
+              }
             }
           }
         }
