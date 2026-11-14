@@ -763,22 +763,24 @@ Item {
 
     PanelSeparator { foreground: root.foreground }
 
-    Toggle {
+    // One setting per tile, the switch on the title row, so the two of
+    // them are the same shape: a label with its control, and a paragraph.
+    SettingTile {
+      width: parent.width
       label: "Torch"
-      description: "The camera light. Back camera only. Applies on the next start."
+      description: "The camera light. Back camera only. Changing it restarts the stream, because a running stream is doing what its argv says."
       checked: root.torch
-      hasCursor: true
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
       onClicked: root.choose("torch", !root.torch)
     }
 
-    Toggle {
+    SettingTile {
+      width: parent.width
       label: "Phone microphone"
-      description: "Forward the phone's microphone too. It is routed through a null sink, so it does not play out your speakers."
+      description: "Forward the phone's microphone too. It is routed through a null sink, so it does not play out your speakers. Changing it restarts the stream."
       checked: root.audio
-      hasCursor: true
       foreground: root.foreground
       accent: Commons.Color.accent
       fontFamily: root.fontFamily
