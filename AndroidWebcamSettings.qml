@@ -440,6 +440,9 @@ Item {
   readonly property string frameMean:
       (frameResult && frameResult.brightness && frameResult.brightness.mean !== undefined)
         ? String(frameResult.brightness.mean) : ""
+  readonly property string frameSpread:
+      (frameResult && frameResult.brightness && frameResult.brightness.spread !== undefined)
+        ? String(frameResult.brightness.spread) : "unknown"
 
   // The first build of this panel is the first time it opens, so this is the
   // one path that is guaranteed to run then: the bar widget's open signal
@@ -482,6 +485,24 @@ Item {
       color: Qt.darker(root.foreground, 1.4)
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
+      width: parent.width
+    }
+
+    // The picture's own measurement, straight from the same status read.
+    // The number is what separates "the stream is running" from "the
+    // stream is running with a picture in it": the CLI's flat-fill rule
+    // is a spread below 2, and a real frame, even a dark one, is well
+    // above it.  It is already computed on every 4-second poll, so this
+    // is the measurement shown rather than measured again.
+    Text {
+      visible: root.state.streaming && root.state.spread !== null
+      textFormat: Text.PlainText
+      text: "Picture spread " + root.state.spread + " of 255, which the CLI calls "
+          + (root.state.frame ? "a real picture." : "a flat fill: below 2 is nothing arriving.")
+      color: root.state.frame ? Commons.Color.accent : Commons.Color.urgent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
       width: parent.width
     }
 
@@ -830,7 +851,8 @@ Item {
       textFormat: Text.PlainText
       text: root.frameIsBlack
         ? "The frame is black. The stream is running, but this camera is not sending a picture."
-        : ("The frame looks right. Mean brightness " + root.frameMean + " of 255.")
+        : ("The frame looks right. Mean brightness " + root.frameMean + " of 255, spread "
+           + root.frameSpread + " of 255.")
       color: root.frameIsBlack ? Commons.Color.urgent : Commons.Color.accent
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption

@@ -74,6 +74,13 @@ function streamState(status) {
     sink: typeof signal.sink === "string" ? signal.sink
       : (typeof host.sink === "string" ? host.sink : ""),
     format: typeof host.sink_format === "string" ? host.sink_format : "",
+    // The picture's own measurement, which the CLI already computes on
+    // every status read: the spread of the luma plane, where a flat fill
+    // is below 2.0 and any real picture, even a dark one, is well above
+    // it.  Null while there is no picture to measure, which is also why
+    // it is not shown when the stream is down.
+    spread: typeof signal.frame_spread === "number" ? signal.frame_spread : null,
+    mean: typeof signal.frame_mean === "number" ? signal.frame_mean : null,
     problems: isPlainArray(host.problems) ? host.problems : [],
     // A stream running with no picture is the state worth surfacing,
     // because the process list still shows scrcpy and the user has no
