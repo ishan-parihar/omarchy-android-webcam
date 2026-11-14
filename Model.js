@@ -344,3 +344,17 @@ function argvFrom(settings) {
   if (s.audio) args.push("--with-audio");
   return args;
 }
+
+// Where this plugin's own files live.
+//
+// The settings the panel writes, the service and the CLI read, and the
+// frame the panel captures, are one directory of this plugin's state.
+// Model.js is plain JS with no Quickshell to read the environment for
+// it, so the caller passes the base directory in once; the path itself
+// lives here so the three callers cannot drift apart, and so the state
+// directory has one owner to change if it ever moves.
+function statePath(stateDir, fileName) {
+  var base = (typeof stateDir === "string" && stateDir !== "") ? stateDir
+    : "/invalid";
+  return base + "/android-scrcpy-control/" + fileName;
+}

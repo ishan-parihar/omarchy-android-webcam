@@ -219,6 +219,13 @@ Item {
 
   function connectPhone() {
     if (connectProc.running) return;
+    // Without the CLI a sweep cannot answer, and saying "nothing
+    // answered" would send the user to the network instead of at the
+    // install they need.
+    if (root.cliMissing) {
+      root.connectNote = "The 'android' command is not installed, so there is nothing to search with.";
+      return;
+    }
     root.connectNote = "Looking for the phone... It can take a minute, because "
         + "the phone picks a new port every time.";
     root.connecting = true;
@@ -304,7 +311,7 @@ Item {
   }
 
   readonly property string settingsPath:
-      Quickshell.env("XDG_STATE_HOME") + "/android-scrcpy-control/webcam-settings.json"
+      Model.statePath(Quickshell.env("XDG_STATE_HOME"), "webcam-settings.json")
 
   // --- writes ----------------------------------------------------------------
   //
@@ -317,28 +324,38 @@ Item {
   //
   // The effective values above are read-only views, so a control cannot
   // assign to them without destroying the binding that keeps the panel
-  // honest.  This builds the whole settings object from the current
-  // effective values, replaces the one key, and writes it: the FileView
-  // reloads it and every binding updates from the file, which is also
-  // what the service reads.
+  // honest.  This builds the whole settings object, replaces the one
+  // key, and writes it: the FileView reloads it and every binding
+  // updates from the file, which is also what the service reads.
+  //
+  // The base is the settings the file holds, not the running stream's
+  // argv.  While a stream is up the effective values describe what that
+  // stream is doing, and a restart takes a moment the 4-second status
+  // poll has not caught up with yet: building from the stream would undo
+  // a change written by an earlier click in the same burst.  When the
+  // stream is down the two are the same object, so nothing else moves.
   //
   // Changing one of these while the stream runs has to be more than a
   // write: a running stream is doing what its argv says, so the choice
-  // takes effect by restarting it. A panel that accepted the click and
+  // takes effect by restarting it.  A panel that accepted the click and
   // changed nothing under a live picture would be a control that lies.
   function choose(key, value) {
     var out = {
-      facing: root.facing,
-      size: root.size,
-      fps: root.fps,
-      bitRate: root.bitRate,
-      torch: root.torch,
-      audio: root.audio
+      facing: saved("facing", "front"),
+      size: saved("size", "1280x720"),
+      fps: saved("fps", "30"),
+      bitRate: saved("bitRate", "8M"),
+      torch: saved("torch", false),
+      audio: saved("audio", false)
     };
     out[key] = value;
     root.savedSettings = out;
     settingsFile.setText(JSON.stringify(out, null, 2) + "\n");
-    if (root.state.streaming && root.onRequestRestart) root.onRequestRestart(out);
+    // No CLI, no restart: the choice is recorded for the next start, and
+    // the panel's own missing-CLI note above says why nothing happened.
+    if (root.state.streaming && root.onRequestRestart && !root.cliMissing) {
+      root.onRequestRestart(out);
+    }
   }
 
   // Whether the durable service is the camera's owner.
@@ -397,7 +414,7 @@ Item {
   Process {
     id: frameProc
     command: [root.cli, "webcam", "capture", "--output",
-              root.settingsPath.replace("webcam-settings.json", "frame.png"),
+              Model.statePath(Quickshell.env("XDG_STATE_HOME"), "frame.png"),
               "--json"]
     stdout: StdioCollector {
       onStreamFinished: {
@@ -835,7 +852,7 @@ Item {
 
     Text {
       textFormat: Text.PlainText
-      text: "Saves to " + Quickshell.env("XDG_STATE_HOME") + "/android-scrcpy-control/frame.png"
+      text: "Saves to " + Model.statePath(Quickshell.env("XDG_STATE_HOME"), "frame.png")
       color: Qt.darker(root.foreground, 1.5)
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption

@@ -236,7 +236,7 @@ Panel {
   }
 
   readonly property string settingsPath:
-      Quickshell.env("XDG_STATE_HOME") + "/android-scrcpy-control/webcam-settings.json"
+      Model.statePath(Quickshell.env("XDG_STATE_HOME"), "webcam-settings.json")
 
   Process {
     id: startProc
